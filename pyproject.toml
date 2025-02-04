@@ -1,0 +1,9 @@
+[project]
+name = "diskcache-decorator"
+version = "0.1.0"
+description = "function decorator that caches results to disk"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "diskcache>=5.6.3",
+]
