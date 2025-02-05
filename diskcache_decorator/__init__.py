@@ -1,10 +1,22 @@
 import asyncio
 import functools
 import hashlib
+from typing import Callable, Any
 from diskcache import Cache
 
+class _ReturnValueException(Exception):
 
-def cached(cache_path: str|None=None, key: str|None=None, ttl: float|None=None):
+    def __init__(self, return_value: Any):
+        super().__init__()
+        self.return_value = return_value
+
+class DoNotCache(_ReturnValueException):
+    pass
+
+class DeleteCache(_ReturnValueException):
+    pass
+
+def cached(cache_path: str|None=None, cache_key: str|Callable[[Any, list[Any], dict[str, Any]], str]|None=None, ttl: float|None=None):
     """
     A decorator to cache the results of async or regular functions using diskcache.
     """
@@ -15,26 +27,45 @@ def cached(cache_path: str|None=None, key: str|None=None, ttl: float|None=None):
 
             @functools.wraps(func)
             async def async_wrapper(*args, **kwargs):
-                cache_key = key or _generate_cache_key(func, *args, **kwargs)
-                cached_result = cache.get(cache_key)
+                if callable(cache_key):
+                    the_key = cache_key(func, args, kwargs)
+                else:
+                    the_key = cache_key or _generate_cache_key(func, *args, **kwargs)
+                cached_result = cache.get(the_key)
 
                 if cached_result is not None:
                     return cached_result
 
-                result = await func(*args, **kwargs)
-                cache.set(cache_key, result, expire=ttl)  # Set with optional TTL
+                try:
+                    result = await func(*args, **kwargs)
+                except DoNotCache as dnc:
+                    return dnc.return_value
+                except DeleteCache as dc:
+                    cache.delete(the_key)
+                    return dc.return_value
+                else:
+                    cache.set(the_key, result, expire=ttl)  # Set with optional TTL
                 return result
 
             @functools.wraps(func)
             def sync_wrapper(*args, **kwargs):
-                cache_key = key or _generate_cache_key(func, *args, **kwargs)
-                cached_result = cache.get(cache_key)
+                if callable(cache_key):
+                    the_key = cache_key(func, args, kwargs)
+                else:
+                    the_key = cache_key or _generate_cache_key(func, *args, **kwargs)
+                cached_result = cache.get(the_key)
 
                 if cached_result is not None:
                     return cached_result
-
-                result = func(*args, **kwargs)
-                cache.set(cache_key, result, expire=ttl)
+                try:
+                    result = func(*args, **kwargs)
+                except DoNotCache as dnc:
+                    return dnc.return_value
+                except DeleteCache as dc:
+                    cache.delete(the_key)
+                    return dc.return_value
+                else:
+                    cache.set(the_key, result, expire=ttl)  # Set with optional TTL
                 return result
 
             return async_wrapper if is_async else sync_wrapper
@@ -47,8 +78,8 @@ def _generate_cache_key(func, *args, **kwargs):
 
     args_str = str(args)
     kwargs_str = str(kwargs)
-
-    combined = f"{func.__name__}:{args_str}:{kwargs_str}"
+    func_name = func.__name__
+    combined = f"{func_name}:{args_str}:{kwargs_str}"
     return hashlib.md5(combined.encode()).hexdigest()  # Use hash for key
 
 
@@ -64,6 +95,18 @@ def my_sync_function(x, y):
   from time import sleep
   sleep(2)
   return x * y
+
+class Foo:
+
+    def __init__(self, base_number: int):
+        self._n = base_number
+
+    @cached()
+    async def bar(self, a):
+        print("A call to bar was made")
+        await asyncio.sleep(3)
+        return self._n + a
+
 
 async def demo():
     from time import time
@@ -84,6 +127,8 @@ async def demo():
     t4 = time()
     print(f"Cached call of my_sync_function took {t4-t3:.2f} seconds")
 
+    f = Foo(123)
+    await f.bar(2)
 
 if __name__ == "__main__":
     asyncio.run(demo())
